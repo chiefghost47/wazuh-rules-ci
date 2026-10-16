@@ -1,0 +1,7 @@
+# Rule ids that exist on the manager outside this repository. One id or one inclusive
+# range (a-b) per line. Export this from the manager and keep it current: a repository rule
+# with one of these ids passes every check here and is rejected by the manager as a duplicate.
+#
+# Examples; replace with your manager's.
+100000-100099   # manager-local rules kept outside the repository
+100500          # a one-off rule added by hand during an incident

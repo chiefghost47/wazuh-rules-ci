@@ -1,0 +1,13 @@
+<!--
+  Example custom decoder for lines like:
+    myapp: user=alice action=export result=denied
+-->
+<decoder name="myapp">
+  <prematch>^myapp: </prematch>
+</decoder>
+
+<decoder name="myapp-fields">
+  <parent>myapp</parent>
+  <regex offset="after_parent">^user=(\S+) action=(\S+) result=(\S+)</regex>
+  <order>user, action, result</order>
+</decoder>

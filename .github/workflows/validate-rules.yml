@@ -1,0 +1,122 @@
+name: validate
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  # Pin to the engine version your manager runs. A newer engine accepting a rule
+  # proves nothing about the older one in production.
+  WAZUH_VERSION: 4.14.1-1
+  # The ID range this repository owns. Wazuh reserves 100000-120000 for custom rules.
+  RULE_ID_MIN: "100100"
+  RULE_ID_MAX: "100999"
+
+jobs:
+  validate:
+    # GitHub-hosted on purpose: this job installs a package with sudo and leaves
+    # /var/ossec behind. See "Runner note" in README.md before moving it.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Well-formed XML, unique IDs, IDs inside this repository's range
+        run: python3 scripts/validate-xml.py
+
+      - name: No rule ID collides with a rule that lives only on the manager
+        run: scripts/check-reserved-ids.sh
+
+      - name: Decoder manifest matches the decoder files
+        run: scripts/make-decoder-manifest.sh --check
+
+      - name: Load rules and decoders with the real Wazuh engine
+        run: |
+          set -o pipefail
+          # policy-rc.d exit 101 keeps the postinst from starting the service:
+          # this job needs the ruleset loaded and checked, never a running manager.
+          printf '#!/bin/sh\nexit 101\n' | sudo tee /usr/sbin/policy-rc.d >/dev/null
+          sudo chmod +x /usr/sbin/policy-rc.d
+          curl -fsSL https://packages.wazuh.com/key/GPG-KEY-WAZUH \
+            | sudo gpg --dearmor -o /usr/share/keyrings/wazuh.gpg
+          echo "deb [signed-by=/usr/share/keyrings/wazuh.gpg] https://packages.wazuh.com/4.x/apt/ stable main" \
+            | sudo tee /etc/apt/sources.list.d/wazuh.list >/dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq "wazuh-manager=${WAZUH_VERSION}"
+
+          # /var/ossec/etc is wazuh:wazuh 0770 and bin is root:wazuh 0750: an unprivileged
+          # test or glob there silently reports "missing". Everything below runs under sudo.
+          if ! sudo test -x /var/ossec/bin/wazuh-analysisd; then
+            echo "::error::wazuh-analysisd not installed; /var/ossec contains:"
+            sudo ls -la /var/ossec 2>&1 | head -20
+            exit 2
+          fi
+          echo "engine: $(dpkg-query -W -f='${Version}' wazuh-manager)"
+
+          sudo mkdir -p /var/ossec/etc/rules /var/ossec/etc/decoders
+          sudo cp rules/*.xml /var/ossec/etc/rules/
+          sudo cp decoders/*.xml /var/ossec/etc/decoders/
+          sudo sh -c 'chown wazuh:wazuh /var/ossec/etc/rules/*.xml /var/ossec/etc/decoders/*.xml'
+          echo "staged: $(sudo sh -c 'ls -1 /var/ossec/etc/rules/*.xml' | wc -l) rule files, $(sudo sh -c 'ls -1 /var/ossec/etc/decoders/*.xml' | wc -l) decoder files"
+
+          # analysisd resolves etc/internal_options.conf relative to the working directory,
+          # and the runner user cannot enter /var/ossec, so the cd happens inside sudo.
+          # -t validates and exits; -f keeps the loader's messages on stderr instead of only in
+          # logs/ossec.log. Both are captured, and ossec.log is appended too, so nothing is lost.
+          sudo sh -c 'cd /var/ossec && ./bin/wazuh-analysisd -t -f' > analysisd.log 2>&1 && rc=0 || rc=$?
+          sudo sh -c 'cat /var/ossec/logs/ossec.log 2>/dev/null' >> analysisd.log || true
+          # The log is printed verbatim on every run, pass or fail. A grep that matches nothing
+          # would hide the reason, and a clean exit code is not the whole story (see below).
+          echo "--- analysisd output (exit ${rc:-0}) ---"
+          cat analysisd.log || true
+          echo "--- end ---"
+          if [ "${rc:-0}" -ne 0 ]; then
+            echo "::error::the engine refused this ruleset; it would break the manager"
+            exit 1
+          fi
+          # The loader can WARN and skip a rule (missing parent, duplicate id, bad option) and
+          # still exit 0. Treat any such diagnostic as a failure: a skipped rule is a silent gap.
+          if grep -iE "WARNING|ERROR|CRITICAL" analysisd.log | grep -iqE "rule|decoder|duplicate|not found|invalid|signature|parent|skipp"; then
+            echo "::error::the engine loaded with rule or decoder diagnostics; a rule it skipped would never fire"
+            exit 1
+          fi
+          # The loader is silent on success; the next step proves its silence is not deafness.
+          echo "the engine accepted the ruleset with no rule or decoder diagnostics"
+
+      - name: Prove the gate rejects a broken rule (negative self-test, every run)
+        run: |
+          sudo cp tests/fixtures/broken-decoder-ref.xml /var/ossec/etc/rules/zz-selftest-broken.xml
+          sudo chown wazuh:wazuh /var/ossec/etc/rules/zz-selftest-broken.xml
+          sudo sh -c 'cd /var/ossec && ./bin/wazuh-analysisd -t -f' > broken.log 2>&1 && rc=0 || rc=$?
+          sudo sh -c 'cat /var/ossec/logs/ossec.log 2>/dev/null' >> broken.log || true
+          sudo rm -f /var/ossec/etc/rules/zz-selftest-broken.xml
+          echo "--- analysisd output for the broken rule (exit ${rc}) ---"
+          cat broken.log || true
+          echo "--- end ---"
+          if [ "${rc}" -eq 0 ]; then
+            echo "::error::the engine accepted a rule that references a missing decoder; this gate catches nothing"
+            exit 1
+          fi
+          if ! grep -qi "decoder" broken.log; then
+            echo "::error::the engine rejected the broken rule but its reason was not captured; diagnostics are being lost"
+            exit 1
+          fi
+          echo "the engine rejected the broken rule with a visible reason: the gate and its capture work"
+
+  secrets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

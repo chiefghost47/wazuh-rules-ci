@@ -1,0 +1,10 @@
+<!--
+  Negative fixture, staged by CI only: references a decoder that does not exist. The engine
+  must refuse it with a visible reason. If this file ever loads, the gate is not working.
+-->
+<group name="local,selftest,">
+  <rule id="100900" level="3">
+    <decoded_as>no-such-decoder-selftest</decoded_as>
+    <description>selftest: must be rejected by the loader</description>
+  </rule>
+</group>

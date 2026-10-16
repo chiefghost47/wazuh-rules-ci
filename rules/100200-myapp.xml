@@ -1,0 +1,19 @@
+<!--
+  Example family: an application log line with a custom decoder (decoders/myapp_decoder.xml).
+  Log format: "myapp: user=<name> action=<verb> result=<ok|denied>"
+-->
+<group name="local,myapp,">
+
+  <rule id="100200" level="3">
+    <decoded_as>myapp</decoded_as>
+    <description>myapp: $(user) $(action) $(result)</description>
+  </rule>
+
+  <rule id="100201" level="7">
+    <if_sid>100200</if_sid>
+    <field name="result">^denied$</field>
+    <description>myapp: action denied for user $(user)</description>
+    <group>access_denied,</group>
+  </rule>
+
+</group>

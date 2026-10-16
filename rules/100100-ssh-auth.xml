@@ -1,0 +1,30 @@
+<!--
+  Example family: SSH authentication, layered on the stock sshd rules without competing with
+  them. The stock ruleset already correlates repeated failures (5712); these rules build on it.
+  Replace with your own rules; keep one family per file and the first id in the file name.
+-->
+<group name="local,sshd,">
+
+  <rule id="100100" level="12" timeframe="600">
+    <if_sid>5715</if_sid>
+    <if_matched_sid>5712</if_matched_sid>
+    <same_source_ip />
+    <description>sshd: successful login from a source the stock brute-force rule flagged within the last 10 minutes</description>
+    <mitre>
+      <id>T1110</id>
+      <id>T1078</id>
+    </mitre>
+    <group>authentication_success,brute_force,</group>
+  </rule>
+
+  <rule id="100101" level="9">
+    <if_sid>5715</if_sid>
+    <user>^root$</user>
+    <description>sshd: direct root login succeeded</description>
+    <mitre>
+      <id>T1078</id>
+    </mitre>
+    <group>authentication_success,</group>
+  </rule>
+
+</group>
